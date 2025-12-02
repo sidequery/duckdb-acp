@@ -62,6 +62,10 @@ SET acp_debug = true;
 SET acp_timeout = 600;
 ```
 
+## Safety
+
+By default, all mutation queries all blocked (unless you override the `acp_safe_mode` setting in DuckDB exposed by this extension. All default agent tools are blocked; the underlying agaent only has access to run SQL against the host DuckDB database.
+
 ## Architecture
 
 ```
@@ -165,5 +169,6 @@ MIT
 ## Acknowledgments
 
 - [DuckDB](https://duckdb.org/) for the excellent embeddable database
-- [Anthropic](https://www.anthropic.com/) for Claude and the ACP specification
+- [Zed Industries](https://zed.dev/) for the [ACP specification](https://github.com/zed-industries/agent-client-protocol)
+- [Anthropic](https://www.anthropic.com/) for Claude and MCP
 - [rmcp](https://github.com/anthropics/rmcp) for the Rust MCP implementation

@@ -36,6 +36,18 @@ fn get_instructions(is_tvf: bool, safe_mode: bool) -> String {
         You may use any SQL statements including INSERT, UPDATE, DELETE, CREATE, etc.\n\n"
     };
 
+    let catalog_exploration = "\
+        CATALOG EXPLORATION (do this first!):\n\
+        DuckDB has a rich information_schema. Use these queries to understand the database:\n\
+        - SELECT * FROM information_schema.schemata; -- list all schemas\n\
+        - SELECT table_schema, table_name, table_type FROM information_schema.tables; -- all tables\n\
+        - SELECT * FROM information_schema.columns WHERE table_name = 'x'; -- columns for table\n\
+        - DESCRIBE table_name; -- quick way to see columns\n\
+        - SHOW TABLES; -- tables in current schema\n\
+        - SHOW ALL TABLES; -- tables in all schemas\n\
+        - SELECT database_name, schema_name, function_name FROM duckdb_functions() WHERE function_type = 'table'; -- table functions\n\n\
+        IMPORTANT: Always explore the catalog first to understand what data is available!\n\n";
+
     if is_tvf {
         format!(
             "DuckDB MCP Server for the claude() table-valued function (TVF).\n\n\
@@ -43,15 +55,17 @@ fn get_instructions(is_tvf: bool, safe_mode: bool) -> String {
             Your job is to generate a SQL query that answers the user's question.\n\
             The result will be returned directly as a table to the user.\n\n\
             TOOLS:\n\
-            1) `run_sql` - Execute SQL to explore schema and test queries\n\
+            1) `run_sql` - Execute SQL to explore the catalog/schema and test queries\n\
             2) `final_query` - YOU MUST CALL THIS at the end with your final SQL answer\n\n\
-            {}\
+            {restrictions}\
+            {catalog}\
             Workflow:\n\
-            1. Use run_sql('SHOW TABLES') to see available tables\n\
-            2. Use run_sql('DESCRIBE table_name') to see columns\n\
-            3. Use run_sql to test your query\n\
-            4. ALWAYS call final_query with the SQL that answers the question",
-            restrictions
+            1. EXPLORE: Use run_sql to query information_schema and understand available tables/columns\n\
+            2. INVESTIGATE: Look at sample data with SELECT * FROM table LIMIT 5\n\
+            3. BUILD: Construct and test your query\n\
+            4. SUBMIT: ALWAYS call final_query with the SQL that answers the question",
+            restrictions = restrictions,
+            catalog = catalog_exploration
         )
     } else {
         format!(
@@ -59,18 +73,21 @@ fn get_instructions(is_tvf: bool, safe_mode: bool) -> String {
             You are being invoked from: ACP <natural language query> or CLAUDE <query>\n\
             Your job is to generate a SQL query that answers the user's question.\n\n\
             TOOLS:\n\
-            1) `run_sql` - Execute SQL to explore schema and test queries\n\
+            1) `run_sql` - Execute SQL to explore the catalog/schema and test queries\n\
             2) `final_query` - YOU MUST CALL THIS at the end with your final SQL answer\n\n\
-            {}\
+            {restrictions}\
+            {catalog}\
             Workflow:\n\
-            1. Use run_sql('SHOW TABLES') to see available tables\n\
-            2. Use run_sql('DESCRIBE table_name') to see columns\n\
-            3. Use run_sql to test your query\n\
-            4. ALWAYS call final_query with the SQL that answers the question\n\n\
+            1. EXPLORE: Use run_sql to query information_schema and understand available tables/columns\n\
+            2. INVESTIGATE: Look at sample data with SELECT * FROM table LIMIT 5\n\
+            3. BUILD: Construct and test your query\n\
+            4. SUBMIT: ALWAYS call final_query with the SQL that answers the question\n\n\
             Tips:\n\
-            - DuckDB SQL dialect\n\
-            - Keep LIMIT small during exploration",
-            restrictions
+            - DuckDB SQL dialect (supports CTEs, window functions, UNNEST, etc.)\n\
+            - Keep LIMIT small during exploration\n\
+            - Check duckdb_functions() for available functions",
+            restrictions = restrictions,
+            catalog = catalog_exploration
         )
     }
 }

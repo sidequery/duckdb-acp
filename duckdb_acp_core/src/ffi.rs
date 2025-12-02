@@ -297,14 +297,21 @@ async fn run_acp_flow(
             "\n\n\
             You are operating as a SQL generation assistant within DuckDB. \
             You have access to a single MCP server called 'duckdb' with two tools:\n\
-            1. `run_sql` - Execute SQL to explore schema and test queries\n\
+            1. `run_sql` - Execute SQL to explore the catalog/schema and test queries\n\
             2. `final_query` - Submit your final SQL answer (REQUIRED at the end)\n\n\
             CRITICAL RULES:\n\
             - You can ONLY use the MCP tools provided. No file access, no terminal, no other capabilities.\n\
             {}\
-            - Always call `final_query` with your answer - this is how results are returned to the user.\n\
-            - Be efficient: explore schema quickly, test your query, then submit via final_query.\n\
-            - DuckDB SQL dialect. Use LIMIT during exploration to keep responses small.",
+            - Always call `final_query` with your answer - this is how results are returned to the user.\n\n\
+            WORKFLOW:\n\
+            1. EXPLORE THE CATALOG FIRST! Use information_schema to discover tables and columns:\n\
+               - SELECT table_schema, table_name FROM information_schema.tables;\n\
+               - SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'x';\n\
+               - SHOW ALL TABLES; or DESCRIBE table_name;\n\
+            2. Look at sample data: SELECT * FROM table LIMIT 5;\n\
+            3. Build and test your query\n\
+            4. Submit via final_query\n\n\
+            Be efficient but thorough in exploring what data is available before writing your query.",
             mode_rules
         );
 

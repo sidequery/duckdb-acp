@@ -1,5 +1,5 @@
 #
-# This workflow calls the main distribution pipeline from DuckDB to build, test and (optionally) release the extension
+# Build, test and (optionally) release the extension
 #
 name: Main Extension Distribution Pipeline
 on:
@@ -12,19 +12,60 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  duckdb-stable-build:
-    name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.2
-    with:
-      duckdb_version: v1.4.2
-      ci_tools_version: v1.4.2
-      extension_name: quack
+  build:
+    name: Build (${{ matrix.duckdb_arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            duckdb_arch: linux_amd64
+            rust_target: x86_64-unknown-linux-gnu
+          - os: macos-13
+            duckdb_arch: osx_amd64
+            rust_target: x86_64-apple-darwin
+          - os: macos-14
+            duckdb_arch: osx_arm64
+            rust_target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust library
+        run: |
+          cd duckdb_acp_core
+          cargo build --release
+
+      - name: Build extension
+        run: make release
+
+      - name: Test extension
+        run: make test
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: acp-${{ matrix.duckdb_arch }}
+          path: build/release/extension/acp/acp.duckdb_extension
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.4.2
-    with:
-      duckdb_version: v1.4.2
-      ci_tools_version: v1.4.2
-      extension_name: quack
-      format_checks: 'format;tidy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install format tools
+        run: pip install "black>=24" "clang-format==11.0.1" "cmake-format"
+
+      - name: Format check
+        run: python duckdb/scripts/format.py --all --check --directories src test
