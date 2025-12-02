@@ -76,6 +76,7 @@ pub extern "C" fn acp_generate_sql(
     debug: bool,
     timeout_secs: i32,
     mode: i32,
+    safe_mode: bool,
     callback: QueryCallback,
     callback_context: *mut std::ffi::c_void,
 ) -> *mut c_char {
@@ -104,10 +105,10 @@ pub extern "C" fn acp_generate_sql(
     let is_tvf = mode == 1;
 
     if debug {
-        eprintln!("acp: starting, query='{}', agent='{}'", query, agent_cmd);
+        eprintln!("acp: starting, query='{}', agent='{}', safe_mode={}", query, agent_cmd, safe_mode);
     }
 
-    match generate_sql_impl(&agent_cmd, &agent_args, &query, debug, timeout, is_tvf, callback, callback_context) {
+    match generate_sql_impl(&agent_cmd, &agent_args, &query, debug, timeout, is_tvf, safe_mode, callback, callback_context) {
         Ok(sql) => {
             if debug {
                 eprintln!("acp: success, sql={}", sql);
@@ -130,6 +131,7 @@ fn generate_sql_impl(
     debug: bool,
     timeout: Option<std::time::Duration>,
     is_tvf: bool,
+    safe_mode: bool,
     callback: QueryCallback,
     callback_context: *mut std::ffi::c_void,
 ) -> Result<String, String> {
@@ -169,16 +171,16 @@ fn generate_sql_impl(
 
         // Start embedded HTTP MCP server
         if debug {
-            eprintln!("acp: starting embedded HTTP MCP server");
+            eprintln!("acp: starting embedded HTTP MCP server (safe_mode={})", safe_mode);
         }
-        let (port, shutdown_tx) = start_mcp_http_server(sql_callback, is_tvf).await
+        let (port, shutdown_tx) = start_mcp_http_server(sql_callback, is_tvf, safe_mode).await
             .map_err(|e| format!("Failed to start MCP server: {}", e))?;
 
         if debug {
             eprintln!("acp: MCP server running on port {}", port);
         }
 
-        let acp_future = run_acp_flow(&agent_cmd, &agent_args, &query, port, debug);
+        let acp_future = run_acp_flow(&agent_cmd, &agent_args, &query, port, debug, safe_mode);
 
         let result = if let Some(timeout_duration) = timeout {
             match tokio::time::timeout(timeout_duration, acp_future).await {
@@ -202,6 +204,7 @@ async fn run_acp_flow(
     query: &str,
     mcp_port: u16,
     debug: bool,
+    safe_mode: bool,
 ) -> Result<String, String> {
     let final_sql = Arc::new(Mutex::new(None::<String>));
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -284,22 +287,31 @@ async fn run_acp_flow(
             eprintln!("acp: creating session with HTTP MCP server at {}", mcp_url);
         }
 
+        let mode_rules = if safe_mode {
+            "- Generate ONLY read-only SELECT queries. Never INSERT, UPDATE, DELETE, DROP, CREATE, etc.\n"
+        } else {
+            "- You may use any SQL statements including INSERT, UPDATE, DELETE, CREATE, etc.\n"
+        };
+
+        let system_prompt = format!(
+            "\n\n\
+            You are operating as a SQL generation assistant within DuckDB. \
+            You have access to a single MCP server called 'duckdb' with two tools:\n\
+            1. `run_sql` - Execute SQL to explore schema and test queries\n\
+            2. `final_query` - Submit your final SQL answer (REQUIRED at the end)\n\n\
+            CRITICAL RULES:\n\
+            - You can ONLY use the MCP tools provided. No file access, no terminal, no other capabilities.\n\
+            {}\
+            - Always call `final_query` with your answer - this is how results are returned to the user.\n\
+            - Be efficient: explore schema quickly, test your query, then submit via final_query.\n\
+            - DuckDB SQL dialect. Use LIMIT during exploration to keep responses small.",
+            mode_rules
+        );
+
         let session_meta: serde_json::Map<String, serde_json::Value> = serde_json::from_value(serde_json::json!({
             "disableBuiltInTools": true,
             "systemPrompt": {
-                "append": concat!(
-                    "\n\n",
-                    "You are operating as a SQL generation assistant within DuckDB. ",
-                    "You have access to a single MCP server called 'duckdb' with two tools:\n",
-                    "1. `run_sql` - Execute SQL to explore schema and test queries\n",
-                    "2. `final_query` - Submit your final SQL answer (REQUIRED at the end)\n\n",
-                    "CRITICAL RULES:\n",
-                    "- You can ONLY use the MCP tools provided. No file access, no terminal, no other capabilities.\n",
-                    "- Generate ONLY read-only SELECT queries. Never INSERT, UPDATE, DELETE, DROP, CREATE, etc.\n",
-                    "- Always call `final_query` with your answer - this is how results are returned to the user.\n",
-                    "- Be efficient: explore schema quickly, test your query, then submit via final_query.\n",
-                    "- DuckDB SQL dialect. Use LIMIT during exploration to keep responses small."
-                )
+                "append": system_prompt
             }
         })).unwrap();
 

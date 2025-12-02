@@ -24,46 +24,54 @@ use tokio::sync::oneshot;
 pub type SqlCallback = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
 /// Get instructions based on mode
-fn get_instructions(is_tvf: bool) -> String {
-    if is_tvf {
-        "DuckDB MCP Server for the claude() table-valued function (TVF).\n\n\
-        You are being invoked from: SELECT * FROM claude('user question')\n\
-        Your job is to generate a SQL query that answers the user's question.\n\
-        The result will be returned directly as a table to the user.\n\n\
-        TOOLS:\n\
-        1) `run_sql` - Execute SQL to explore schema and test queries\n\
-        2) `final_query` - YOU MUST CALL THIS at the end with your final SQL answer\n\n\
-        RESTRICTIONS (READ-ONLY MODE):\n\
+fn get_instructions(is_tvf: bool, safe_mode: bool) -> String {
+    let restrictions = if safe_mode {
+        "RESTRICTIONS (READ-ONLY MODE):\n\
         - ONLY use SELECT queries to read data\n\
         - DO NOT use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE\n\
         - DO NOT use COPY, IMPORT, EXPORT, ATTACH, DETACH\n\
-        - DO NOT modify schema or data in any way\n\n\
-        Workflow:\n\
-        1. Use run_sql('SHOW TABLES') to see available tables\n\
-        2. Use run_sql('DESCRIBE table_name') to see columns\n\
-        3. Use run_sql to test your SELECT query\n\
-        4. ALWAYS call final_query with the SELECT query that answers the question".to_string()
+        - DO NOT modify schema or data in any way\n\n"
     } else {
-        "DuckDB MCP Server for ACP/CLAUDE SQL generation.\n\n\
-        You are being invoked from: ACP <natural language query> or CLAUDE <query>\n\
-        Your job is to generate a SQL query that answers the user's question.\n\n\
-        TOOLS:\n\
-        1) `run_sql` - Execute SQL to explore schema and test queries\n\
-        2) `final_query` - YOU MUST CALL THIS at the end with your final SQL answer\n\n\
-        RESTRICTIONS (READ-ONLY MODE):\n\
-        - ONLY use SELECT queries to read data\n\
-        - DO NOT use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE\n\
-        - DO NOT use COPY, IMPORT, EXPORT, ATTACH, DETACH\n\
-        - DO NOT modify schema or data in any way\n\
-        - If asked to modify data, explain you can only read\n\n\
-        Workflow:\n\
-        1. Use run_sql('SHOW TABLES') to see available tables\n\
-        2. Use run_sql('DESCRIBE table_name') to see columns\n\
-        3. Use run_sql to test your SELECT query\n\
-        4. ALWAYS call final_query with the SELECT query that answers the question\n\n\
-        Tips:\n\
-        - DuckDB SQL dialect\n\
-        - Keep LIMIT small during exploration".to_string()
+        "MODE: Full access (mutations allowed)\n\
+        You may use any SQL statements including INSERT, UPDATE, DELETE, CREATE, etc.\n\n"
+    };
+
+    if is_tvf {
+        format!(
+            "DuckDB MCP Server for the claude() table-valued function (TVF).\n\n\
+            You are being invoked from: SELECT * FROM claude('user question')\n\
+            Your job is to generate a SQL query that answers the user's question.\n\
+            The result will be returned directly as a table to the user.\n\n\
+            TOOLS:\n\
+            1) `run_sql` - Execute SQL to explore schema and test queries\n\
+            2) `final_query` - YOU MUST CALL THIS at the end with your final SQL answer\n\n\
+            {}\
+            Workflow:\n\
+            1. Use run_sql('SHOW TABLES') to see available tables\n\
+            2. Use run_sql('DESCRIBE table_name') to see columns\n\
+            3. Use run_sql to test your query\n\
+            4. ALWAYS call final_query with the SQL that answers the question",
+            restrictions
+        )
+    } else {
+        format!(
+            "DuckDB MCP Server for ACP/CLAUDE SQL generation.\n\n\
+            You are being invoked from: ACP <natural language query> or CLAUDE <query>\n\
+            Your job is to generate a SQL query that answers the user's question.\n\n\
+            TOOLS:\n\
+            1) `run_sql` - Execute SQL to explore schema and test queries\n\
+            2) `final_query` - YOU MUST CALL THIS at the end with your final SQL answer\n\n\
+            {}\
+            Workflow:\n\
+            1. Use run_sql('SHOW TABLES') to see available tables\n\
+            2. Use run_sql('DESCRIBE table_name') to see columns\n\
+            3. Use run_sql to test your query\n\
+            4. ALWAYS call final_query with the SQL that answers the question\n\n\
+            Tips:\n\
+            - DuckDB SQL dialect\n\
+            - Keep LIMIT small during exploration",
+            restrictions
+        )
     }
 }
 
@@ -71,11 +79,12 @@ fn get_instructions(is_tvf: bool) -> String {
 pub struct DuckDbMcpService {
     sql_callback: SqlCallback,
     is_tvf: bool,
+    safe_mode: bool,
 }
 
 impl DuckDbMcpService {
-    pub fn new(sql_callback: SqlCallback, is_tvf: bool) -> Self {
-        Self { sql_callback, is_tvf }
+    pub fn new(sql_callback: SqlCallback, is_tvf: bool, safe_mode: bool) -> Self {
+        Self { sql_callback, is_tvf, safe_mode }
     }
 }
 
@@ -92,7 +101,7 @@ impl ServerHandler for DuckDbMcpService {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some(get_instructions(self.is_tvf)),
+            instructions: Some(get_instructions(self.is_tvf, self.safe_mode)),
         }
     }
 
@@ -101,6 +110,8 @@ impl ServerHandler for DuckDbMcpService {
         _request: Option<PaginatedRequestParam>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
+        let safe_mode = self.safe_mode;
+
         let run_sql_schema = serde_json::json!({
             "type": "object",
             "properties": {
@@ -113,9 +124,15 @@ impl ServerHandler for DuckDbMcpService {
             "additionalProperties": false
         });
 
+        let run_sql_desc = if safe_mode {
+            "Execute a DuckDB SQL query for exploration. Use this to explore the schema (SHOW TABLES, DESCRIBE table_name) and test queries. READ-ONLY MODE: Only SELECT queries allowed."
+        } else {
+            "Execute a DuckDB SQL query. Use this to explore the schema (SHOW TABLES, DESCRIBE table_name), test queries, and execute any SQL statements."
+        };
+
         let run_sql_tool = Tool::new(
             "run_sql",
-            "Execute a DuckDB SQL query for exploration. Use this to explore the schema (SHOW TABLES, DESCRIBE table_name) and test SELECT queries. READ-ONLY: Do not use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, or any mutation queries. Returns results as JSON.",
+            run_sql_desc,
             rmcp::model::object(run_sql_schema),
         );
 
@@ -131,9 +148,15 @@ impl ServerHandler for DuckDbMcpService {
             "additionalProperties": false
         });
 
+        let final_query_desc = if safe_mode {
+            "REQUIRED: You MUST call this tool at the end with the final query that answers the user's question. READ-ONLY MODE: Only SELECT queries allowed."
+        } else {
+            "REQUIRED: You MUST call this tool at the end with the final SQL that answers the user's question."
+        };
+
         let final_query_tool = Tool::new(
             "final_query",
-            "REQUIRED: You MUST call this tool at the end of every conversation with the final SELECT query that answers the user's question. READ-ONLY: Only SELECT queries are allowed. Do not submit INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, or any mutation queries.",
+            final_query_desc,
             rmcp::model::object(final_query_schema),
         );
 
@@ -187,6 +210,7 @@ impl ServerHandler for DuckDbMcpService {
 pub async fn start_mcp_http_server(
     sql_callback: SqlCallback,
     is_tvf: bool,
+    safe_mode: bool,
 ) -> Result<(u16, oneshot::Sender<()>), String> {
     // Bind to port 0 to get a random available port
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -207,7 +231,7 @@ pub async fn start_mcp_http_server(
     };
 
     let mcp_service = StreamableHttpService::new(
-        move || Ok(DuckDbMcpService::new(sql_callback.clone(), is_tvf)),
+        move || Ok(DuckDbMcpService::new(sql_callback.clone(), is_tvf, safe_mode)),
         session_manager,
         config,
     );

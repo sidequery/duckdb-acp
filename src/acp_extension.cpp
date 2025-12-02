@@ -27,6 +27,7 @@ extern "C" {
                              bool debug,
                              int32_t timeout_secs,
                              int32_t mode,
+                             bool safe_mode,
                              QueryCallback callback,
                              void* callback_context);
 
@@ -283,17 +284,18 @@ static bool IsMutationSQL(const std::string &sql) {
 static std::string TransformToSQL(const std::string &nl_query, const std::string &agent_override = "", bool is_tvf = false) {
     std::string agent_cmd = agent_override.empty() ? GetAgentCommand() : agent_override;
     bool debug = IsDebugMode();
+    bool safe_mode = IsSafeMode();
     int32_t timeout = GetTimeout();
     int32_t mode = is_tvf ? 1 : 0;
-    char* sql = acp_generate_sql(nl_query.c_str(), agent_cmd.c_str(), debug, timeout, mode, ExecuteQueryCallback, nullptr);
+    char* sql = acp_generate_sql(nl_query.c_str(), agent_cmd.c_str(), debug, timeout, mode, safe_mode, ExecuteQueryCallback, nullptr);
     if (!sql) {
         throw ParserException("ACP: Failed to generate SQL");
     }
     std::string result(sql);
     acp_free_string(sql);
 
-    // Check for mutations if safe mode is enabled
-    if (IsSafeMode() && IsMutationSQL(result)) {
+    // Double-check for mutations if safe mode is enabled (belt and suspenders)
+    if (safe_mode && IsMutationSQL(result)) {
         return "SELECT 'ACP ERROR: Safe mode is enabled. Mutation queries (INSERT, UPDATE, DELETE, DROP, etc.) are blocked. Use SET acp_safe_mode=false to disable.' AS acp_error";
     }
 
