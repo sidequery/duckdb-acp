@@ -6,3 +6,6 @@
 	path = extension-ci-tools
 	url = https://github.com/duckdb/extension-ci-tools
 	branch = main
+[submodule "corrosion"]
+	path = corrosion
+	url = https://github.com/corrosion-rs/corrosion.git

@@ -1,0 +1,12 @@
+# name: test/sql/acp.test
+# description: test acp extension
+# group: [sql]
+
+# Require statement will ensure this test is run with this extension loaded
+require acp
+
+# Test that ACP prefix is recognized (will fail without API key, but parser should work)
+# This test would need ANTHROPIC_API_KEY set to actually work
+# For now, just verify the extension loads
+statement ok
+SELECT 1;
