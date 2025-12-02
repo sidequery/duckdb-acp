@@ -1,10 +1,10 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.12)
 
 set(CORROSION_VERBOSE_OUTPUT ON)
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED 1)
 
-# Detect Rust target (copied from duckdb-prql)
+# Detect Rust target based on platform
 execute_process(
     COMMAND rustup target list --installed
     OUTPUT_VARIABLE RUST_TARGETS
@@ -24,13 +24,20 @@ if("${OS_NAME}" STREQUAL "linux")
             set(Rust_CARGO_TARGET "x86_64-unknown-linux-gnu")
         endif()
     endif()
-elseif("${OS_NAME}" STREQUAL "osx")
+elseif("${OS_NAME}" STREQUAL "osx" OR APPLE)
     if ("${OSX_BUILD_ARCH}" STREQUAL "arm64")
         set(Rust_CARGO_TARGET "aarch64-apple-darwin")
     elseif ("${OSX_BUILD_ARCH}" STREQUAL "x86_64")
         set(Rust_CARGO_TARGET "x86_64-apple-darwin")
     elseif ("${OS_ARCH}" STREQUAL "arm64")
         set(Rust_CARGO_TARGET "aarch64-apple-darwin")
+    elseif ("${OS_ARCH}" STREQUAL "amd64")
+        set(Rust_CARGO_TARGET "x86_64-apple-darwin")
+    elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+        set(Rust_CARGO_TARGET "aarch64-apple-darwin")
+    else()
+        # Default to x86_64 for macOS
+        set(Rust_CARGO_TARGET "x86_64-apple-darwin")
     endif()
 elseif(WIN32)
    if (MINGW AND "${OS_ARCH}" STREQUAL "arm64")
@@ -44,12 +51,10 @@ elseif(WIN32)
    endif()
 endif()
 
-if("${Rust_CARGO_TARGET}" STREQUAL "")
-  message(FATAL_ERROR "Failed to detect the correct Rust target platform")
-endif()
-
-message(STATUS "RUST_TARGETS: ${RUST_TARGETS}")
 message(STATUS "Rust_CARGO_TARGET: ${Rust_CARGO_TARGET}")
+message(STATUS "OS_NAME: ${OS_NAME}")
+message(STATUS "OS_ARCH: ${OS_ARCH}")
+message(STATUS "OSX_BUILD_ARCH: ${OSX_BUILD_ARCH}")
 
 set(TARGET_NAME acp)
 
