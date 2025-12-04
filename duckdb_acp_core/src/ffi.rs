@@ -28,12 +28,12 @@ use crate::mcp_server::{start_mcp_http_server, SqlCallback};
 pub type QueryCallback = extern "C" fn(sql: *const c_char, context: *mut std::ffi::c_void) -> *const c_char;
 
 /// Resolve agent command to actual executable
-fn resolve_agent_command(agent: &str, debug: bool) -> (String, Vec<String>) {
+fn resolve_agent_command(agent: &str, debug: bool) -> Result<(String, Vec<String>), String> {
     if agent.starts_with('/') || agent.starts_with("./") || agent.starts_with("../") {
         if debug {
             eprintln!("acp: using agent path '{}'", agent);
         }
-        return (agent.to_string(), vec![]);
+        return Ok((agent.to_string(), vec![]));
     }
 
     let expanded = match agent {
@@ -45,27 +45,24 @@ fn resolve_agent_command(agent: &str, debug: bool) -> (String, Vec<String>) {
         if debug {
             eprintln!("acp: found agent '{}' in PATH", expanded);
         }
-        return (expanded.to_string(), vec![]);
+        return Ok((expanded.to_string(), vec![]));
     }
 
     if which::which("bunx").is_ok() {
         if debug {
             eprintln!("acp: using bunx to run '{}'", expanded);
         }
-        return ("bunx".to_string(), vec![expanded.to_string()]);
+        return Ok(("bunx".to_string(), vec![expanded.to_string()]));
     }
 
     if which::which("npx").is_ok() {
         if debug {
             eprintln!("acp: using npx to run '{}'", expanded);
         }
-        return ("npx".to_string(), vec![expanded.to_string()]);
+        return Ok(("npx".to_string(), vec![expanded.to_string()]));
     }
 
-    if debug {
-        eprintln!("acp: agent '{}' not found, npx/bunx not available", expanded);
-    }
-    (expanded.to_string(), vec![])
+    Err("Neither bun nor npm found in PATH. Install bun (https://bun.sh) or Node.js (https://nodejs.org) to use ACP.".to_string())
 }
 
 /// Generate SQL from natural language query using ACP
@@ -94,7 +91,13 @@ pub extern "C" fn acp_generate_sql(
         }
     };
 
-    let (agent_cmd, agent_args) = resolve_agent_command(&agent_setting, debug);
+    let (agent_cmd, agent_args) = match resolve_agent_command(&agent_setting, debug) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("acp: {}", e);
+            return std::ptr::null_mut();
+        }
+    };
 
     let timeout = if timeout_secs > 0 {
         Some(std::time::Duration::from_secs(timeout_secs as u64))
