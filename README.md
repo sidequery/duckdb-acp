@@ -69,32 +69,30 @@ By default, all mutation queries all blocked (unless you override the `acp_safe_
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                         DuckDB Process                           │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │                   ACP Extension (C++)                      │  │
-│  │  - Parses CLAUDE statements and claude() function calls    │  │
-│  │  - Invokes Rust FFI for agent communication                │  │
-│  │  - Executes generated SQL and returns results              │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│                               │                                  │
-│                               ▼                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │               Rust Core (duckdb_acp_core)                  │  │
-│  │  - Embedded HTTP MCP server (axum + rmcp)                  │  │
-│  │  - ACP client implementation                               │  │
-│  │  - Tool execution via SQL callback                         │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│          │                                     ▲                 │
-│          │ stdio                               │ HTTP            │
-│          ▼                                     │                 │
-│  ┌────────────────────┐            ┌──────────────────────────┐  │
-│  │  claude-code-acp   │◄──────────►│   Embedded MCP Server    │  │
-│  │      (agent)       │ tool calls │  (run_sql, final_query)  │  │
-│  └────────────────────┘            └──────────────────────────┘  │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                          DuckDB Process                             │
+│                                                                     │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │                    ACP Extension (C++)                        │  │
+│  │  - Parses CLAUDE statements and claude() function calls       │  │
+│  │  - Invokes Rust FFI for agent communication                   │  │
+│  │  - Executes generated SQL and returns results                 │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                │                                    │
+│                                ▼                                    │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │                Rust Core (duckdb_acp_core)                    │  │
+│  │  - ACP client: spawns agent, communicates via stdio           │  │
+│  │  - MCP server: HTTP server exposing run_sql, final_sql tools  │  │
+│  │  - Tool execution via SQL callback to C++                     │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                    │ stdio (ACP)           ▲                        │
+│                    ▼                       │ HTTP (MCP)             │
+│             ┌─────────────┐                │                        │
+│             │ Claude Code │────────────────┘                        │
+│             └─────────────┘                                         │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### How It Works
