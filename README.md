@@ -49,7 +49,7 @@ SELECT * FROM claude('which product has the highest average sale amount?');
 | `acp_agent` | VARCHAR | `claude-code` | Agent command or path |
 | `acp_safe_mode` | BOOLEAN | `true` | Block mutation queries |
 | `acp_debug` | BOOLEAN | `false` | Enable verbose debug output |
-| `acp_show_messages` | BOOLEAN | `false` | Stream agent thinking to stderr |
+| `acp_show_messages` | BOOLEAN | `false` | Stream agent thinking to output |
 | `acp_show_sql` | BOOLEAN | `false` | Print generated SQL before executing |
 | `acp_timeout` | INTEGER | `300` | Timeout in seconds |
 
