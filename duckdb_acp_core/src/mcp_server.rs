@@ -97,11 +97,12 @@ pub struct DuckDbMcpService {
     sql_callback: SqlCallback,
     is_tvf: bool,
     safe_mode: bool,
+    show_sql: bool,
 }
 
 impl DuckDbMcpService {
-    pub fn new(sql_callback: SqlCallback, is_tvf: bool, safe_mode: bool) -> Self {
-        Self { sql_callback, is_tvf, safe_mode }
+    pub fn new(sql_callback: SqlCallback, is_tvf: bool, safe_mode: bool, show_sql: bool) -> Self {
+        Self { sql_callback, is_tvf, safe_mode, show_sql }
     }
 }
 
@@ -195,10 +196,17 @@ impl ServerHandler for DuckDbMcpService {
                 .arguments
                 .ok_or_else(|| McpError::invalid_params("missing arguments", None))?;
 
+            let show_sql = self.show_sql;
+
             match request.name.as_ref() {
                 "run_sql" => {
                     let params: RunSqlParams = serde_json::from_value(Value::Object(args))
                         .map_err(|e| McpError::invalid_params(format!("bad arguments: {e}"), None))?;
+
+                    if show_sql {
+                        eprintln!("\n[Explore SQL]\n{}", params.sql);
+                        let _ = std::io::Write::flush(&mut std::io::stderr());
+                    }
 
                     let result = sql_callback(&params.sql);
                     Ok(CallToolResult::success(vec![Content::text(result)]))
@@ -228,6 +236,7 @@ pub async fn start_mcp_http_server(
     sql_callback: SqlCallback,
     is_tvf: bool,
     safe_mode: bool,
+    show_sql: bool,
 ) -> Result<(u16, oneshot::Sender<()>), String> {
     // Bind to port 0 to get a random available port
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -248,7 +257,7 @@ pub async fn start_mcp_http_server(
     };
 
     let mcp_service = StreamableHttpService::new(
-        move || Ok(DuckDbMcpService::new(sql_callback.clone(), is_tvf, safe_mode)),
+        move || Ok(DuckDbMcpService::new(sql_callback.clone(), is_tvf, safe_mode, show_sql)),
         session_manager,
         config,
     );

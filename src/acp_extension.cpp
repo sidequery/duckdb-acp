@@ -24,8 +24,9 @@ typedef const char *(*QueryCallback)(const char *sql, void *context);
 // Main Rust function to generate SQL from natural language
 // Returns allocated string that must be freed with acp_free_string
 // mode: 0 = statement (ACP/CLAUDE prefix), 1 = tvf (table function)
-char *acp_generate_sql(const char *natural_language_query, const char *agent_command, bool debug, int32_t timeout_secs,
-                       int32_t mode, bool safe_mode, QueryCallback callback, void *callback_context);
+char *acp_generate_sql(const char *natural_language_query, const char *agent_command, bool debug, bool show_messages,
+                       bool show_sql, int32_t timeout_secs, int32_t mode, bool safe_mode, QueryCallback callback,
+                       void *callback_context);
 
 // Free string allocated by Rust
 void acp_free_string(char *s);
@@ -124,6 +125,16 @@ static bool IsSafeMode(ClientContext &context) {
 // Check if debug mode is enabled
 static bool IsDebugMode(ClientContext &context) {
 	return GetBoolSetting(context, "acp_debug", false);
+}
+
+// Check if show_messages mode is enabled (prints agent thinking)
+static bool IsShowMessages(ClientContext &context) {
+	return GetBoolSetting(context, "acp_show_messages", false);
+}
+
+// Check if show_sql mode is enabled (prints generated SQL before running)
+static bool IsShowSQL(ClientContext &context) {
+	return GetBoolSetting(context, "acp_show_sql", false);
 }
 
 // Get timeout in seconds (0 = no timeout)
@@ -271,11 +282,13 @@ static std::string TransformToSQL(ClientContext &context, const std::string &nl_
                                   const std::string &agent_override = "", bool is_tvf = false) {
 	std::string agent_cmd = agent_override.empty() ? GetAgentCommand(context) : agent_override;
 	bool debug = IsDebugMode(context);
+	bool show_messages = IsShowMessages(context);
+	bool show_sql = IsShowSQL(context);
 	bool safe_mode = IsSafeMode(context);
 	int32_t timeout = GetTimeout(context);
 	int32_t mode = is_tvf ? 1 : 0;
-	char *sql = acp_generate_sql(nl_query.c_str(), agent_cmd.c_str(), debug, timeout, mode, safe_mode,
-	                             ExecuteQueryCallback, nullptr);
+	char *sql = acp_generate_sql(nl_query.c_str(), agent_cmd.c_str(), debug, show_messages, show_sql, timeout, mode,
+	                             safe_mode, ExecuteQueryCallback, nullptr);
 	if (!sql) {
 		throw ParserException("ACP: Failed to generate SQL");
 	}
@@ -305,6 +318,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                          LogicalType::BOOLEAN, Value(true));
 
 	config.AddExtensionOption("acp_debug", "Enable debug output to stderr", LogicalType::BOOLEAN, Value(false));
+
+	config.AddExtensionOption("acp_show_messages", "Show agent messages/thinking to stderr", LogicalType::BOOLEAN,
+	                          Value(false));
+
+	config.AddExtensionOption("acp_show_sql", "Show generated SQL before executing", LogicalType::BOOLEAN, Value(false));
 
 	config.AddExtensionOption("acp_timeout", "Timeout in seconds for agent session (0 = no timeout)",
 	                          LogicalType::INTEGER, Value(300));

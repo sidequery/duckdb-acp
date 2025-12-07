@@ -48,14 +48,22 @@ SELECT * FROM claude('which product has the highest average sale amount?');
 |---------|------|---------|-------------|
 | `acp_agent` | VARCHAR | `claude-code` | Agent command or path |
 | `acp_safe_mode` | BOOLEAN | `true` | Block mutation queries |
-| `acp_debug` | BOOLEAN | `false` | Enable debug output |
+| `acp_debug` | BOOLEAN | `false` | Enable verbose debug output |
+| `acp_show_messages` | BOOLEAN | `false` | Stream agent thinking to stderr |
+| `acp_show_sql` | BOOLEAN | `false` | Print generated SQL before executing |
 | `acp_timeout` | INTEGER | `300` | Timeout in seconds |
 
 ```sql
 -- Disable safe mode to allow mutations (use with caution)
 SET acp_safe_mode = false;
 
--- Enable debug output
+-- See the agent's thinking process
+SET acp_show_messages = true;
+
+-- See the generated SQL before it runs
+SET acp_show_sql = true;
+
+-- Enable verbose debug output
 SET acp_debug = true;
 
 -- Increase timeout for complex queries

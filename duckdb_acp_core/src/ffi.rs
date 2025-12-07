@@ -80,6 +80,8 @@ pub extern "C" fn acp_generate_sql(
     natural_language_query: *const c_char,
     agent_command: *const c_char,
     debug: bool,
+    show_messages: bool,
+    show_sql: bool,
     timeout_secs: i32,
     mode: i32,
     safe_mode: bool,
@@ -117,10 +119,10 @@ pub extern "C" fn acp_generate_sql(
     let is_tvf = mode == 1;
 
     if debug {
-        debug_println!("acp: starting, query='{}', agent='{}', safe_mode={}", query, agent_cmd, safe_mode);
+        debug_println!("acp: starting, query='{}', agent='{}', safe_mode={}, show_messages={}, show_sql={}", query, agent_cmd, safe_mode, show_messages, show_sql);
     }
 
-    match generate_sql_impl(&agent_cmd, &agent_args, &query, debug, timeout, is_tvf, safe_mode, callback, callback_context) {
+    match generate_sql_impl(&agent_cmd, &agent_args, &query, debug, show_messages, show_sql, timeout, is_tvf, safe_mode, callback, callback_context) {
         Ok(sql) => {
             if debug {
                 debug_println!("acp: success, sql={}", sql);
@@ -141,6 +143,8 @@ fn generate_sql_impl(
     agent_args: &[String],
     query: &str,
     debug: bool,
+    show_messages: bool,
+    show_sql: bool,
     timeout: Option<std::time::Duration>,
     is_tvf: bool,
     safe_mode: bool,
@@ -159,7 +163,7 @@ fn generate_sql_impl(
     let agent_cmd = agent_cmd.to_string();
     let agent_args = agent_args.to_vec();
 
-    rt.block_on(async move {
+    let sql = rt.block_on(async move {
         // Create SQL callback that invokes the C++ callback
         let sql_callback: SqlCallback = Arc::new(move |sql: &str| {
             let callback: QueryCallback = unsafe { std::mem::transmute(callback_ptr) };
@@ -183,16 +187,16 @@ fn generate_sql_impl(
 
         // Start embedded HTTP MCP server
         if debug {
-            debug_println!("acp: starting embedded HTTP MCP server (safe_mode={})", safe_mode);
+            debug_println!("acp: starting embedded HTTP MCP server (safe_mode={}, show_sql={})", safe_mode, show_sql);
         }
-        let (port, shutdown_tx) = start_mcp_http_server(sql_callback, is_tvf, safe_mode).await
+        let (port, shutdown_tx) = start_mcp_http_server(sql_callback, is_tvf, safe_mode, show_sql).await
             .map_err(|e| format!("Failed to start MCP server: {}", e))?;
 
         if debug {
             debug_println!("acp: MCP server running on port {}", port);
         }
 
-        let acp_future = run_acp_flow(&agent_cmd, &agent_args, &query, port, debug, safe_mode);
+        let acp_future = run_acp_flow(&agent_cmd, &agent_args, &query, port, debug, show_messages, safe_mode);
 
         let result = if let Some(timeout_duration) = timeout {
             match tokio::time::timeout(timeout_duration, acp_future).await {
@@ -207,7 +211,15 @@ fn generate_sql_impl(
         let _ = shutdown_tx.send(());
 
         result
-    })
+    })?;
+
+    // Print the generated SQL if enabled
+    if show_sql {
+        eprintln!("\n[Final SQL]\n{}", sql);
+        let _ = std::io::stderr().flush();
+    }
+
+    Ok(sql)
 }
 
 async fn run_acp_flow(
@@ -216,15 +228,19 @@ async fn run_acp_flow(
     query: &str,
     mcp_port: u16,
     debug: bool,
+    show_messages: bool,
     safe_mode: bool,
 ) -> Result<String, String> {
     let final_sql = Arc::new(Mutex::new(None::<String>));
     let cancelled = Arc::new(AtomicBool::new(false));
+    let message_buffer = Arc::new(Mutex::new(String::new()));
 
     let client = AcpClient {
         final_sql: final_sql.clone(),
         cancelled: cancelled.clone(),
+        message_buffer: message_buffer.clone(),
         debug,
+        show_messages,
     };
 
     if debug {
@@ -378,7 +394,9 @@ async fn run_acp_flow(
 struct AcpClient {
     final_sql: Arc<Mutex<Option<String>>>,
     cancelled: Arc<AtomicBool>,
+    message_buffer: Arc<Mutex<String>>,
     debug: bool,
+    show_messages: bool,
 }
 
 #[async_trait(?Send)]
@@ -453,19 +471,44 @@ impl acp::Client for AcpClient {
 
         match args.update {
             SU::AgentMessageChunk(chunk) => {
+                let content = chunk.content;
+                let text = match content {
+                    acp::ContentBlock::Text(t) => t.text,
+                    acp::ContentBlock::Image(_) => "<image>".into(),
+                    acp::ContentBlock::Audio(_) => "<audio>".into(),
+                    acp::ContentBlock::ResourceLink(link) => link.uri,
+                    acp::ContentBlock::Resource(_) => "<resource>".into(),
+                    _ => "<unknown>".into(),
+                };
+
                 if self.debug {
-                    let text = match chunk.content {
-                        acp::ContentBlock::Text(t) => t.text,
-                        acp::ContentBlock::Image(_) => "<image>".into(),
-                        acp::ContentBlock::Audio(_) => "<audio>".into(),
-                        acp::ContentBlock::ResourceLink(link) => link.uri,
-                        acp::ContentBlock::Resource(_) => "<resource>".into(),
-                        _ => "<unknown>".into(),
-                    };
-                    debug_println!("acp: agent message: {}", text);
+                    debug_println!("acp: agent message chunk: {}", text);
+                }
+
+                // Stream messages immediately for show_messages mode
+                if self.show_messages && !text.trim().is_empty() {
+                    // Track if this is a new message (buffer was empty)
+                    let mut buffer = self.message_buffer.lock().unwrap();
+                    let was_empty = buffer.is_empty();
+                    buffer.push_str(&text);
+
+                    if was_empty {
+                        eprint!("\n[Agent] ");
+                    }
+                    eprint!("{}", text);
+                    let _ = std::io::stderr().flush();
                 }
             }
             SU::ToolCall(tc) => {
+                // End any ongoing message when tool call starts
+                if self.show_messages {
+                    let mut buffer = self.message_buffer.lock().unwrap();
+                    if !buffer.is_empty() {
+                        eprintln!(); // newline after message
+                        buffer.clear();
+                    }
+                }
+
                 if self.debug {
                     debug_println!("acp: tool_call id={} title='{}' status={:?}", tc.tool_call_id.0, tc.title, tc.status);
                 }
