@@ -51,6 +51,8 @@ SELECT * FROM claude('which product has the highest average sale amount?');
 | `acp_debug` | BOOLEAN | `false` | Enable verbose debug output |
 | `acp_show_messages` | BOOLEAN | `false` | Stream agent thinking to output |
 | `acp_show_sql` | BOOLEAN | `false` | Print generated SQL before executing |
+| `acp_show_summary` | BOOLEAN | `false` | Show analysis summary from agent |
+| `acp_show_datasources` | BOOLEAN | `false` | Show datasources and calculations |
 | `acp_timeout` | INTEGER | `300` | Timeout in seconds |
 
 ```sql
@@ -62,6 +64,12 @@ SET acp_show_messages = true;
 
 -- See the generated SQL before it runs
 SET acp_show_sql = true;
+
+-- Show analysis summary
+SET acp_show_summary = true;
+
+-- Show datasources and calculations
+SET acp_show_datasources = true;
 
 -- Enable verbose debug output
 SET acp_debug = true;

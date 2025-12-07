@@ -18,7 +18,15 @@ use rmcp::{
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, mpsc};
+
+/// Result from the final_query tool containing SQL and optional metadata
+#[derive(Debug, Clone)]
+pub struct FinalQueryResult {
+    pub sql: String,
+    pub summary: Option<String>,
+    pub datasources: Option<String>,
+}
 
 /// Callback type for executing SQL queries
 pub type SqlCallback = Arc<dyn Fn(&str) -> String + Send + Sync>;
@@ -98,17 +106,27 @@ pub struct DuckDbMcpService {
     is_tvf: bool,
     safe_mode: bool,
     show_sql: bool,
+    final_result_tx: mpsc::Sender<FinalQueryResult>,
 }
 
 impl DuckDbMcpService {
-    pub fn new(sql_callback: SqlCallback, is_tvf: bool, safe_mode: bool, show_sql: bool) -> Self {
-        Self { sql_callback, is_tvf, safe_mode, show_sql }
+    pub fn new(sql_callback: SqlCallback, is_tvf: bool, safe_mode: bool, show_sql: bool, final_result_tx: mpsc::Sender<FinalQueryResult>) -> Self {
+        Self { sql_callback, is_tvf, safe_mode, show_sql, final_result_tx }
     }
 }
 
 #[derive(Deserialize)]
 struct RunSqlParams {
     sql: String,
+}
+
+#[derive(Deserialize)]
+struct FinalQueryParams {
+    sql: String,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    datasources: Option<String>,
 }
 
 impl ServerHandler for DuckDbMcpService {
@@ -160,6 +178,14 @@ impl ServerHandler for DuckDbMcpService {
                 "sql": {
                     "type": "string",
                     "description": "The final SQL query that answers the user's question"
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "A brief summary of the analysis: what the query does and key insights"
+                },
+                "datasources": {
+                    "type": "string",
+                    "description": "Description of data sources used and how calculations were performed"
                 }
             },
             "required": ["sql"],
@@ -167,9 +193,9 @@ impl ServerHandler for DuckDbMcpService {
         });
 
         let final_query_desc = if safe_mode {
-            "REQUIRED: You MUST call this tool at the end with the final query that answers the user's question. READ-ONLY MODE: Only SELECT queries allowed."
+            "REQUIRED: You MUST call this tool at the end with the final query that answers the user's question. Include 'summary' with a brief analysis and 'datasources' explaining the tables/calculations used. READ-ONLY MODE: Only SELECT queries allowed."
         } else {
-            "REQUIRED: You MUST call this tool at the end with the final SQL that answers the user's question."
+            "REQUIRED: You MUST call this tool at the end with the final SQL that answers the user's question. Include 'summary' with a brief analysis and 'datasources' explaining the tables/calculations used."
         };
 
         let final_query_tool = Tool::new(
@@ -212,8 +238,16 @@ impl ServerHandler for DuckDbMcpService {
                     Ok(CallToolResult::success(vec![Content::text(result)]))
                 }
                 "final_query" => {
-                    let params: RunSqlParams = serde_json::from_value(Value::Object(args))
+                    let params: FinalQueryParams = serde_json::from_value(Value::Object(args))
                         .map_err(|e| McpError::invalid_params(format!("bad arguments: {e}"), None))?;
+
+                    // Send the result through the channel
+                    let final_result = FinalQueryResult {
+                        sql: params.sql.clone(),
+                        summary: params.summary,
+                        datasources: params.datasources,
+                    };
+                    let _ = self.final_result_tx.try_send(final_result);
 
                     // Return a special marker that the FFI layer can detect
                     let result = serde_json::json!({
@@ -231,13 +265,13 @@ impl ServerHandler for DuckDbMcpService {
 }
 
 /// Start an embedded HTTP MCP server on a random port
-/// Returns the port number and a shutdown sender
+/// Returns the port number, a shutdown sender, and a receiver for final query results
 pub async fn start_mcp_http_server(
     sql_callback: SqlCallback,
     is_tvf: bool,
     safe_mode: bool,
     show_sql: bool,
-) -> Result<(u16, oneshot::Sender<()>), String> {
+) -> Result<(u16, oneshot::Sender<()>, mpsc::Receiver<FinalQueryResult>), String> {
     // Bind to port 0 to get a random available port
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -248,6 +282,7 @@ pub async fn start_mcp_http_server(
     let port = addr.port();
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let (final_result_tx, final_result_rx) = mpsc::channel::<FinalQueryResult>(1);
 
     // Create the MCP service
     let session_manager = Arc::new(LocalSessionManager::default());
@@ -257,7 +292,7 @@ pub async fn start_mcp_http_server(
     };
 
     let mcp_service = StreamableHttpService::new(
-        move || Ok(DuckDbMcpService::new(sql_callback.clone(), is_tvf, safe_mode, show_sql)),
+        move || Ok(DuckDbMcpService::new(sql_callback.clone(), is_tvf, safe_mode, show_sql, final_result_tx.clone())),
         session_manager,
         config,
     );
@@ -278,5 +313,5 @@ pub async fn start_mcp_http_server(
         }
     });
 
-    Ok((port, shutdown_tx))
+    Ok((port, shutdown_tx, final_result_rx))
 }

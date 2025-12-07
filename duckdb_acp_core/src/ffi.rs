@@ -31,7 +31,7 @@ use tokio::process::Command;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::mcp_server::{start_mcp_http_server, SqlCallback};
+use crate::mcp_server::{start_mcp_http_server, SqlCallback, FinalQueryResult};
 
 /// Callback type for executing SQL queries from C++
 pub type QueryCallback = extern "C" fn(sql: *const c_char, context: *mut std::ffi::c_void) -> *const c_char;
@@ -82,6 +82,8 @@ pub extern "C" fn acp_generate_sql(
     debug: bool,
     show_messages: bool,
     show_sql: bool,
+    show_summary: bool,
+    show_datasources: bool,
     timeout_secs: i32,
     mode: i32,
     safe_mode: bool,
@@ -119,10 +121,10 @@ pub extern "C" fn acp_generate_sql(
     let is_tvf = mode == 1;
 
     if debug {
-        debug_println!("acp: starting, query='{}', agent='{}', safe_mode={}, show_messages={}, show_sql={}", query, agent_cmd, safe_mode, show_messages, show_sql);
+        debug_println!("acp: starting, query='{}', agent='{}', safe_mode={}, show_messages={}, show_sql={}, show_summary={}, show_datasources={}", query, agent_cmd, safe_mode, show_messages, show_sql, show_summary, show_datasources);
     }
 
-    match generate_sql_impl(&agent_cmd, &agent_args, &query, debug, show_messages, show_sql, timeout, is_tvf, safe_mode, callback, callback_context) {
+    match generate_sql_impl(&agent_cmd, &agent_args, &query, debug, show_messages, show_sql, show_summary, show_datasources, timeout, is_tvf, safe_mode, callback, callback_context) {
         Ok(sql) => {
             if debug {
                 debug_println!("acp: success, sql={}", sql);
@@ -145,6 +147,8 @@ fn generate_sql_impl(
     debug: bool,
     show_messages: bool,
     show_sql: bool,
+    show_summary: bool,
+    show_datasources: bool,
     timeout: Option<std::time::Duration>,
     is_tvf: bool,
     safe_mode: bool,
@@ -163,7 +167,7 @@ fn generate_sql_impl(
     let agent_cmd = agent_cmd.to_string();
     let agent_args = agent_args.to_vec();
 
-    let sql = rt.block_on(async move {
+    let (sql, final_result) = rt.block_on(async move {
         // Create SQL callback that invokes the C++ callback
         let sql_callback: SqlCallback = Arc::new(move |sql: &str| {
             let callback: QueryCallback = unsafe { std::mem::transmute(callback_ptr) };
@@ -189,7 +193,7 @@ fn generate_sql_impl(
         if debug {
             debug_println!("acp: starting embedded HTTP MCP server (safe_mode={}, show_sql={})", safe_mode, show_sql);
         }
-        let (port, shutdown_tx) = start_mcp_http_server(sql_callback, is_tvf, safe_mode, show_sql).await
+        let (port, shutdown_tx, mut final_result_rx) = start_mcp_http_server(sql_callback, is_tvf, safe_mode, show_sql).await
             .map_err(|e| format!("Failed to start MCP server: {}", e))?;
 
         if debug {
@@ -207,11 +211,34 @@ fn generate_sql_impl(
             acp_future.await
         };
 
+        // Try to get the final result with summary/datasources from the channel
+        let final_result = final_result_rx.try_recv().ok();
+
         // Shutdown the MCP server
         let _ = shutdown_tx.send(());
 
-        result
+        result.map(|sql| (sql, final_result))
     })?;
+
+    // Print summary if enabled and available
+    if show_summary {
+        if let Some(ref fr) = final_result {
+            if let Some(ref summary) = fr.summary {
+                eprintln!("\n[Summary]\n{}", summary);
+                let _ = std::io::stderr().flush();
+            }
+        }
+    }
+
+    // Print datasources if enabled and available
+    if show_datasources {
+        if let Some(ref fr) = final_result {
+            if let Some(ref datasources) = fr.datasources {
+                eprintln!("\n[Datasources]\n{}", datasources);
+                let _ = std::io::stderr().flush();
+            }
+        }
+    }
 
     // Print the generated SQL if enabled
     if show_sql {
