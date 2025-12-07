@@ -10,9 +10,18 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::env;
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+
+/// Debug print macro that flushes stderr immediately
+macro_rules! debug_println {
+    ($($arg:tt)*) => {{
+        eprintln!($($arg)*);
+        let _ = std::io::stderr().flush();
+    }};
+}
 
 use agent_client_protocol as acp;
 use acp::Agent;
@@ -31,7 +40,7 @@ pub type QueryCallback = extern "C" fn(sql: *const c_char, context: *mut std::ff
 fn resolve_agent_command(agent: &str, debug: bool) -> Result<(String, Vec<String>), String> {
     if agent.starts_with('/') || agent.starts_with("./") || agent.starts_with("../") {
         if debug {
-            eprintln!("acp: using agent path '{}'", agent);
+            debug_println!("acp: using agent path '{}'", agent);
         }
         return Ok((agent.to_string(), vec![]));
     }
@@ -43,21 +52,21 @@ fn resolve_agent_command(agent: &str, debug: bool) -> Result<(String, Vec<String
 
     if which::which(expanded).is_ok() {
         if debug {
-            eprintln!("acp: found agent '{}' in PATH", expanded);
+            debug_println!("acp: found agent '{}' in PATH", expanded);
         }
         return Ok((expanded.to_string(), vec![]));
     }
 
     if which::which("bunx").is_ok() {
         if debug {
-            eprintln!("acp: using bunx to run '{}'", expanded);
+            debug_println!("acp: using bunx to run '{}'", expanded);
         }
         return Ok(("bunx".to_string(), vec![expanded.to_string()]));
     }
 
     if which::which("npx").is_ok() {
         if debug {
-            eprintln!("acp: using npx to run '{}'", expanded);
+            debug_println!("acp: using npx to run '{}'", expanded);
         }
         return Ok(("npx".to_string(), vec![expanded.to_string()]));
     }
@@ -94,7 +103,7 @@ pub extern "C" fn acp_generate_sql(
     let (agent_cmd, agent_args) = match resolve_agent_command(&agent_setting, debug) {
         Ok(result) => result,
         Err(e) => {
-            eprintln!("acp: {}", e);
+            debug_println!("acp: {}", e);
             return std::ptr::null_mut();
         }
     };
@@ -108,20 +117,20 @@ pub extern "C" fn acp_generate_sql(
     let is_tvf = mode == 1;
 
     if debug {
-        eprintln!("acp: starting, query='{}', agent='{}', safe_mode={}", query, agent_cmd, safe_mode);
+        debug_println!("acp: starting, query='{}', agent='{}', safe_mode={}", query, agent_cmd, safe_mode);
     }
 
     match generate_sql_impl(&agent_cmd, &agent_args, &query, debug, timeout, is_tvf, safe_mode, callback, callback_context) {
         Ok(sql) => {
             if debug {
-                eprintln!("acp: success, sql={}", sql);
+                debug_println!("acp: success, sql={}", sql);
             }
             CString::new(sql)
                 .map(|s| s.into_raw())
                 .unwrap_or(std::ptr::null_mut())
         }
         Err(e) => {
-            eprintln!("acp: FAILED with error: {}", e);
+            debug_println!("acp: FAILED with error: {}", e);
             std::ptr::null_mut()
         }
     }
@@ -174,13 +183,13 @@ fn generate_sql_impl(
 
         // Start embedded HTTP MCP server
         if debug {
-            eprintln!("acp: starting embedded HTTP MCP server (safe_mode={})", safe_mode);
+            debug_println!("acp: starting embedded HTTP MCP server (safe_mode={})", safe_mode);
         }
         let (port, shutdown_tx) = start_mcp_http_server(sql_callback, is_tvf, safe_mode).await
             .map_err(|e| format!("Failed to start MCP server: {}", e))?;
 
         if debug {
-            eprintln!("acp: MCP server running on port {}", port);
+            debug_println!("acp: MCP server running on port {}", port);
         }
 
         let acp_future = run_acp_flow(&agent_cmd, &agent_args, &query, port, debug, safe_mode);
@@ -220,9 +229,9 @@ async fn run_acp_flow(
 
     if debug {
         if agent_args.is_empty() {
-            eprintln!("acp: spawning agent '{}'", agent_cmd);
+            debug_println!("acp: spawning agent '{}'", agent_cmd);
         } else {
-            eprintln!("acp: spawning agent '{}' with args {:?}", agent_cmd, agent_args);
+            debug_println!("acp: spawning agent '{}' with args {:?}", agent_cmd, agent_args);
         }
     }
     let mut child = Command::new(agent_cmd)
@@ -246,7 +255,7 @@ async fn run_acp_flow(
             let mut lines = tokio::io::BufReader::new(stderr).lines();
             tokio::spawn(async move {
                 while let Ok(Some(line)) = lines.next_line().await {
-                    eprintln!("acp agent stderr: {}", line);
+                    debug_println!("acp agent stderr: {}", line);
                 }
             });
         }
@@ -266,15 +275,15 @@ async fn run_acp_flow(
         tokio::task::spawn_local(handle_io);
 
         if debug {
-            eprintln!("acp: sending initialize request");
+            debug_println!("acp: sending initialize request");
         }
         let init_res = conn.initialize(
             acp::InitializeRequest::new(acp::ProtocolVersion::LATEST)
         ).await.map_err(|e| format!("ACP initialize failed: {}", e))?;
 
         if debug {
-            eprintln!("acp: initialize ok, protocol={:?}", init_res.protocol_version);
-            eprintln!("acp: agent capabilities: {:?}", init_res.agent_capabilities);
+            debug_println!("acp: initialize ok, protocol={:?}", init_res.protocol_version);
+            debug_println!("acp: agent capabilities: {:?}", init_res.agent_capabilities);
         }
 
         // Configure HTTP MCP server
@@ -287,7 +296,7 @@ async fn run_acp_flow(
             .unwrap_or_else(|_| std::path::PathBuf::from("/"));
 
         if debug {
-            eprintln!("acp: creating session with HTTP MCP server at {}", mcp_url);
+            debug_println!("acp: creating session with HTTP MCP server at {}", mcp_url);
         }
 
         let mode_rules = if safe_mode {
@@ -332,20 +341,20 @@ async fn run_acp_flow(
         ).await.map_err(|e| format!("ACP new_session failed: {}", e))?;
 
         if debug {
-            eprintln!("acp: session created, id={:?}", new_sess.session_id);
+            debug_println!("acp: session created, id={:?}", new_sess.session_id);
         }
 
         let prompt = query.to_string();
 
         if debug {
-            eprintln!("acp: sending prompt");
+            debug_println!("acp: sending prompt");
         }
         let prompt_res = conn.prompt(
             acp::PromptRequest::new(new_sess.session_id.clone(), vec![prompt.into()])
         ).await.map_err(|e| format!("ACP prompt failed: {}", e))?;
 
         if debug {
-            eprintln!("acp: prompt done, stop_reason={:?}", prompt_res.stop_reason);
+            debug_println!("acp: prompt done, stop_reason={:?}", prompt_res.stop_reason);
         }
 
         Ok::<(), String>(())
@@ -358,7 +367,7 @@ async fn run_acp_flow(
     match sql {
         Some(s) => {
             if debug {
-                eprintln!("acp: final SQL: {}", s);
+                debug_println!("acp: final SQL: {}", s);
             }
             Ok(s)
         }
@@ -379,7 +388,7 @@ impl acp::Client for AcpClient {
         args: acp::RequestPermissionRequest,
     ) -> anyhow::Result<acp::RequestPermissionResponse, acp::Error> {
         if self.debug {
-            eprintln!("acp: permission requested, options={}", args.options.len());
+            debug_println!("acp: permission requested, options={}", args.options.len());
         }
 
         if self.cancelled.load(Ordering::SeqCst) {
@@ -395,7 +404,7 @@ impl acp::Client for AcpClient {
         match choice {
             Some(o) => {
                 if self.debug {
-                    eprintln!("acp: granting permission option_id={}", o.option_id.0);
+                    debug_println!("acp: granting permission option_id={}", o.option_id.0);
                 }
                 Ok(acp::RequestPermissionResponse::new(
                     acp::RequestPermissionOutcome::Selected(
@@ -453,19 +462,19 @@ impl acp::Client for AcpClient {
                         acp::ContentBlock::Resource(_) => "<resource>".into(),
                         _ => "<unknown>".into(),
                     };
-                    eprintln!("acp: agent message: {}", text);
+                    debug_println!("acp: agent message: {}", text);
                 }
             }
             SU::ToolCall(tc) => {
                 if self.debug {
-                    eprintln!("acp: tool_call id={} title='{}' status={:?}", tc.tool_call_id.0, tc.title, tc.status);
+                    debug_println!("acp: tool_call id={} title='{}' status={:?}", tc.tool_call_id.0, tc.title, tc.status);
                 }
 
                 if tc.title.contains("final_query") {
                     if let Some(raw_input) = &tc.raw_input {
                         if let Some(sql) = raw_input.get("sql").and_then(|v| v.as_str()) {
                             if self.debug {
-                                eprintln!("acp: captured final_query SQL: {}", sql);
+                                debug_println!("acp: captured final_query SQL: {}", sql);
                             }
                             *self.final_sql.lock().unwrap() = Some(sql.to_string());
                         }
@@ -475,7 +484,7 @@ impl acp::Client for AcpClient {
             SU::ToolCallUpdate(upd) => {
                 if self.debug {
                     if let Some(status) = &upd.fields.status {
-                        eprintln!("acp: tool_call_update id={} status={:?}", upd.tool_call_id.0, status);
+                        debug_println!("acp: tool_call_update id={} status={:?}", upd.tool_call_id.0, status);
                     }
                 }
             }

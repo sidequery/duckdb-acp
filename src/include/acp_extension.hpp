@@ -42,16 +42,30 @@ struct AcpParserExtension : public ParserExtension {
 };
 
 struct AcpParseData : ParserExtensionParseData {
+	// Store either the NL query (before plan) or the generated statement (after plan)
+	std::string nl_query;
+	std::string agent_override;
 	unique_ptr<SQLStatement> statement;
 
 	unique_ptr<ParserExtensionParseData> Copy() const override {
-		return make_uniq_base<ParserExtensionParseData, AcpParseData>(statement->Copy());
+		if (statement) {
+			auto copy = make_uniq<AcpParseData>(nl_query, agent_override);
+			copy->statement = statement->Copy();
+			return copy;
+		}
+		return make_uniq_base<ParserExtensionParseData, AcpParseData>(nl_query, agent_override);
 	}
 
 	virtual string ToString() const override {
 		return "AcpParseData";
 	}
 
+	// Constructor for parse phase (before SQL generation)
+	AcpParseData(const std::string &nl_query, const std::string &agent_override)
+	    : nl_query(nl_query), agent_override(agent_override), statement(nullptr) {
+	}
+
+	// Constructor for backward compat (with statement)
 	AcpParseData(unique_ptr<SQLStatement> statement) : statement(std::move(statement)) {
 	}
 };

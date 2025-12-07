@@ -13,6 +13,8 @@
 #include <cstring>
 
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/common/file_opener.hpp"
+#include "duckdb/main/client_context_file_opener.hpp"
 
 // Forward declaration of Rust FFI function
 extern "C" {
@@ -89,65 +91,53 @@ static const char *ExecuteQueryCallback(const char *sql, void *context) {
 	}
 }
 
-// Get string setting with fallback
-static std::string GetStringSetting(const std::string &name, const std::string &fallback) {
-	auto db = global_state.db_instance.lock();
-	if (!db) {
-		return fallback;
-	}
-	auto &config = DBConfig::GetConfig(*db);
+// Get string setting with fallback - uses ClientContext for session-level settings
+static std::string GetStringSetting(ClientContext &context, const std::string &name, const std::string &fallback) {
+	ClientContextFileOpener file_opener(context);
 	Value val;
-	if (config.TryGetCurrentSetting(name, val)) {
+	if (FileOpener::TryGetCurrentSetting(&file_opener, name, val)) {
 		return val.ToString();
 	}
 	return fallback;
 }
 
-// Get bool setting with fallback
-static bool GetBoolSetting(const std::string &name, bool fallback) {
-	auto db = global_state.db_instance.lock();
-	if (!db) {
-		return fallback;
-	}
-	auto &config = DBConfig::GetConfig(*db);
+// Get bool setting with fallback - uses ClientContext for session-level settings
+static bool GetBoolSetting(ClientContext &context, const std::string &name, bool fallback) {
+	ClientContextFileOpener file_opener(context);
 	Value val;
-	if (config.TryGetCurrentSetting(name, val)) {
+	if (FileOpener::TryGetCurrentSetting(&file_opener, name, val)) {
 		return val.GetValue<bool>();
 	}
 	return fallback;
 }
 
 // Get the configured agent command from settings
-static std::string GetAgentCommand() {
-	return GetStringSetting("acp_agent", "claude-code-acp");
+static std::string GetAgentCommand(ClientContext &context) {
+	return GetStringSetting(context, "acp_agent", "claude-code-acp");
 }
 
 // Check if safe mode is enabled (blocks mutations)
-static bool IsSafeMode() {
-	return GetBoolSetting("acp_safe_mode", true);
+static bool IsSafeMode(ClientContext &context) {
+	return GetBoolSetting(context, "acp_safe_mode", true);
 }
 
 // Check if debug mode is enabled
-static bool IsDebugMode() {
-	return GetBoolSetting("acp_debug", false);
+static bool IsDebugMode(ClientContext &context) {
+	return GetBoolSetting(context, "acp_debug", false);
 }
 
 // Get timeout in seconds (0 = no timeout)
-static int32_t GetTimeout() {
-	auto db = global_state.db_instance.lock();
-	if (!db) {
-		return 300;
-	}
-	auto &config = DBConfig::GetConfig(*db);
+static int32_t GetTimeout(ClientContext &context) {
+	ClientContextFileOpener file_opener(context);
 	Value val;
-	if (config.TryGetCurrentSetting("acp_timeout", val)) {
+	if (FileOpener::TryGetCurrentSetting(&file_opener, "acp_timeout", val)) {
 		return val.GetValue<int32_t>();
 	}
 	return 300;
 }
 
 // Forward declaration
-static std::string TransformToSQL(const std::string &nl_query, const std::string &agent_override, bool is_tvf);
+static std::string TransformToSQL(ClientContext &context, const std::string &nl_query, const std::string &agent_override, bool is_tvf);
 
 // ============================================================================
 // Claude Table Function (TVF)
@@ -174,7 +164,7 @@ static unique_ptr<FunctionData> ClaudeBind(ClientContext &context, TableFunction
 	// Generate SQL using the agent (always use claude-code for this TVF)
 	string sql_query;
 	try {
-		sql_query = TransformToSQL(nl_query, "claude-code", true); // true = TVF mode
+		sql_query = TransformToSQL(context, nl_query, "claude-code", true); // true = TVF mode
 	} catch (std::exception &e) {
 		throw BinderException("claude() failed to generate SQL: " + string(e.what()));
 	}
@@ -277,12 +267,12 @@ static bool IsMutationSQL(const std::string &sql) {
 // Transform natural language to SQL using the Rust/Claude backend
 // agent_override: if non-empty, use this agent instead of the setting
 // is_tvf: true if called from the claude() table function, false for ACP/CLAUDE statements
-static std::string TransformToSQL(const std::string &nl_query, const std::string &agent_override = "",
-                                  bool is_tvf = false) {
-	std::string agent_cmd = agent_override.empty() ? GetAgentCommand() : agent_override;
-	bool debug = IsDebugMode();
-	bool safe_mode = IsSafeMode();
-	int32_t timeout = GetTimeout();
+static std::string TransformToSQL(ClientContext &context, const std::string &nl_query,
+                                  const std::string &agent_override = "", bool is_tvf = false) {
+	std::string agent_cmd = agent_override.empty() ? GetAgentCommand(context) : agent_override;
+	bool debug = IsDebugMode(context);
+	bool safe_mode = IsSafeMode(context);
+	int32_t timeout = GetTimeout(context);
 	int32_t mode = is_tvf ? 1 : 0;
 	char *sql = acp_generate_sql(nl_query.c_str(), agent_cmd.c_str(), debug, timeout, mode, safe_mode,
 	                             ExecuteQueryCallback, nullptr);
@@ -381,12 +371,29 @@ ParserExtensionParseResult acp_parse(ParserExtensionInfo *, const std::string &q
 		return ParserExtensionParseResult(prefix + ": Please provide a query after '" + prefix + "'");
 	}
 
-	// Transform natural language to SQL
+	// Don't generate SQL here - we don't have ClientContext yet
+	// Store the NL query and generate SQL in acp_plan where we have context
+	return ParserExtensionParseResult(make_uniq_base<ParserExtensionParseData, AcpParseData>(nl_query, agent_override));
+}
+
+ParserExtensionPlanResult acp_plan(ParserExtensionInfo *, ClientContext &context,
+                                   unique_ptr<ParserExtensionParseData> parse_data) {
+	auto acp_parse_data = dynamic_cast<AcpParseData *>(parse_data.get());
+	if (!acp_parse_data) {
+		throw BinderException("Invalid ACP parse data");
+	}
+
+	// NOW we have ClientContext - generate SQL with proper settings
 	std::string sql_query;
 	try {
-		sql_query = TransformToSQL(nl_query, agent_override);
+		sql_query = TransformToSQL(context, acp_parse_data->nl_query, acp_parse_data->agent_override, false);
 	} catch (std::exception &e) {
-		return ParserExtensionParseResult(e.what());
+		throw BinderException(e.what());
+	}
+
+	// Check if agent returned an error message
+	if (sql_query.find("ACP ERROR:") != std::string::npos) {
+		throw BinderException(sql_query);
 	}
 
 	// Parse the generated SQL
@@ -394,20 +401,17 @@ ParserExtensionParseResult acp_parse(ParserExtensionInfo *, const std::string &q
 	try {
 		parser.ParseQuery(sql_query);
 	} catch (std::exception &e) {
-		return ParserExtensionParseResult(prefix + " generated invalid SQL: " + std::string(e.what()) +
-		                                  "\nGenerated SQL: " + sql_query);
+		throw BinderException("ACP generated invalid SQL: " + std::string(e.what()) + "\nGenerated SQL: " + sql_query);
 	}
 
 	auto statements = std::move(parser.statements);
 	if (statements.empty()) {
-		return ParserExtensionParseResult(prefix + ": No statements generated");
+		throw BinderException("ACP: No statements generated");
 	}
 
-	return ParserExtensionParseResult(make_uniq_base<ParserExtensionParseData, AcpParseData>(std::move(statements[0])));
-}
+	// Store the parsed statement in parse_data for acp_bind
+	acp_parse_data->statement = std::move(statements[0]);
 
-ParserExtensionPlanResult acp_plan(ParserExtensionInfo *, ClientContext &context,
-                                   unique_ptr<ParserExtensionParseData> parse_data) {
 	// Stash the parse data and throw to trigger binding via acp_bind
 	auto acp_state = make_shared_ptr<AcpState>(std::move(parse_data));
 	context.registered_state->Remove("acp");
