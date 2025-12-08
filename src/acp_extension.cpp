@@ -158,7 +158,8 @@ static int32_t GetTimeout(ClientContext &context) {
 }
 
 // Forward declaration
-static std::string TransformToSQL(ClientContext &context, const std::string &nl_query, const std::string &agent_override, bool is_tvf);
+static std::string TransformToSQL(ClientContext &context, const std::string &nl_query,
+                                  const std::string &agent_override, bool is_tvf);
 
 // ============================================================================
 // Claude Table Function (TVF)
@@ -334,9 +335,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	config.AddExtensionOption("acp_show_messages", "Show agent messages/thinking to stderr", LogicalType::BOOLEAN,
 	                          Value(false));
 
-	config.AddExtensionOption("acp_show_sql", "Show generated SQL before executing", LogicalType::BOOLEAN, Value(false));
+	config.AddExtensionOption("acp_show_sql", "Show generated SQL before executing", LogicalType::BOOLEAN,
+	                          Value(false));
 
-	config.AddExtensionOption("acp_show_summary", "Show analysis summary from agent", LogicalType::BOOLEAN, Value(false));
+	config.AddExtensionOption("acp_show_summary", "Show analysis summary from agent", LogicalType::BOOLEAN,
+	                          Value(false));
 
 	config.AddExtensionOption("acp_show_datasources", "Show datasources and calculations from agent",
 	                          LogicalType::BOOLEAN, Value(false));
